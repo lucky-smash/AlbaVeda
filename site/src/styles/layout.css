@@ -329,6 +329,7 @@
 .crumbs {
   display: flex;
   flex-wrap: wrap;
+  align-items: center;
   gap: 0.5rem;
   font-size: var(--fs-small);
   color: var(--ink-3);
@@ -840,5 +841,43 @@ img.line__img {
 @media (max-width: 760px) {
   .site-header__mark img {
     width: 74px !important;
+  }
+}
+
+@media (max-width: 520px) {
+  /* Two short link columns side by side instead of one long stack */
+  .site-footer__top {
+    grid-template-columns: 1fr 1fr;
+    gap: var(--s-6) var(--s-5);
+  }
+  .site-footer__brand,
+  .site-footer__top > .site-footer__col:last-child {
+    grid-column: 1 / -1;
+  }
+}
+
+@media (max-width: 760px) {
+  /* 40px+ tap targets for text links in the footer */
+  .site-footer__col ul {
+    gap: 0;
+  }
+  .site-footer__col a,
+  .site-footer__legal a,
+  .site-footer__col address a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+  }
+  .site-footer__col address {
+    gap: 0;
+  }
+  .site-footer__social {
+    gap: 0 1.1rem !important;
+  }
+  .site-footer__market {
+    gap: var(--s-2) var(--s-5);
+  }
+  .site-footer__market .eyebrow {
+    flex-basis: 100%;
   }
 }

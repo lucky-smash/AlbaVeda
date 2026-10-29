@@ -427,3 +427,17 @@
   gap: var(--s-3);
   margin-top: var(--s-3);
 }
+
+@media (max-width: 760px) {
+  /* Phone numbers and inline policy links: 40px tap targets */
+  .contact__info li a,
+  .buy__facts a,
+  .buy__market a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+  }
+  .contact__info ul {
+    gap: 0;
+  }
+}

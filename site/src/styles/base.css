@@ -325,6 +325,18 @@ ol[role="list"] {
   text-decoration: none;
   border-bottom: 1px solid currentColor;
   padding-bottom: 2px;
+  /* hug the text even inside grid/flex-column parents (no full-width underline) */
+  width: fit-content;
+  justify-self: start;
+  align-self: flex-start;
+  position: relative;
+}
+
+/* Invisible 44px-tall hit area so the slim underlined link is easy to tap */
+.link-arrow::before {
+  content: "";
+  position: absolute;
+  inset: -11px -6px;
 }
 
 .link-arrow svg {

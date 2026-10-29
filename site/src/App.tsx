@@ -34,7 +34,9 @@ function Layout() {
       <Footer />
       <CartDrawer />
       <SearchSheet open={searchOpen} onClose={() => setSearchOpen(false)} />
-      <ScrollRestoration />
+      {/* Every full page load gets history key "default"; key those by path so a
+          freshly opened URL doesn't inherit the previous page's scroll position. */}
+      <ScrollRestoration getKey={(loc) => (loc.key === "default" ? loc.pathname : loc.key)} />
     </>
   );
 }

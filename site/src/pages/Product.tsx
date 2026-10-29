@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import { AddToBag } from "../components/AddToBag";
 import { ArrowRight, External } from "../components/Icons";
@@ -27,6 +27,29 @@ export default function ProductPage() {
   const [imgIdx, setImgIdx] = useState(0);
   const [qty, setQty] = useState(1);
   const ref = useReveal<HTMLDivElement>([id]);
+  const actionsRef = useRef<HTMLDivElement>(null);
+  const [barVisible, setBarVisible] = useState(false);
+
+  // Show the mobile buy bar only once the main Add button has scrolled up out of view.
+  // A position check (not IntersectionObserver): a fast fling can jump from "below"
+  // to "above" the viewport without ever intersecting, which IO never reports.
+  useEffect(() => {
+    let raf = 0;
+    const check = () => {
+      raf = 0;
+      const el = actionsRef.current;
+      setBarVisible(!!el && el.getBoundingClientRect().bottom < 0);
+    };
+    const onScroll = () => {
+      if (!raf) raf = requestAnimationFrame(check);
+    };
+    check();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("scroll", onScroll);
+    };
+  }, [id]);
 
   useEffect(() => {
     setVariantIdx(initialVariant(product, size));
@@ -125,7 +148,7 @@ export default function ProductPage() {
               </fieldset>
             )}
 
-            <div className="buy__actions">
+            <div className="buy__actions" ref={actionsRef}>
               <QtyStepper value={qty} onChange={setQty} label={product.name} />
               <AddToBag
                 variantId={v.id}
@@ -201,6 +224,24 @@ export default function ProductPage() {
             </div>
           </section>
         )}
+      </div>
+
+      <div className="buy-bar" data-visible={barVisible} inert={!barVisible}>
+        <div className="buy-bar__info">
+          <span className="buy-bar__name">
+            {product.name}
+            {v.label ? ` · ${v.label}` : ""}
+          </span>
+          <Price price={v.price} compareAt={v.compareAt} size="s" />
+        </div>
+        <AddToBag
+          variantId={v.id}
+          qty={qty}
+          name={`${product.name}${v.label ? ` (${v.label})` : ""}`}
+          disabled={!v.inStock}
+          openAfter
+          label={qty > 1 ? `Add ${qty}` : "Add to bag"}
+        />
       </div>
     </div>
   );

@@ -71,7 +71,7 @@
 
 .card__type {
   color: var(--ink-3);
-  font-size: 0.68rem;
+  font-size: 0.75rem;
 }
 
 .card__name {
@@ -222,7 +222,7 @@
 }
 
 .price__off {
-  font-size: 0.74em;
+  font-size: max(0.74em, 0.75rem);
   font-weight: 700;
   color: var(--alba-red-ink);
   letter-spacing: 0.02em;
@@ -332,12 +332,19 @@
   height: auto;
   aspect-ratio: 1;
   object-fit: contain;
-  mix-blend-mode: multiply;
+  object-position: bottom;
+  filter: drop-shadow(0 14px 18px rgb(60 38 18 / 0.16)) drop-shadow(0 2px 3px rgb(60 38 18 / 0.12));
   left: calc(var(--i) * 27%);
   rotate: calc((var(--i) - 1) * 7deg);
   translate: 0 calc(var(--i) * 0px);
   animation: fanIn 900ms var(--ease-out) both;
   animation-delay: calc(var(--i) * 90ms + 100ms);
+}
+
+/* fallback photos still sit on white studio backgrounds */
+.pack-fan img[data-cut="false"] {
+  mix-blend-mode: multiply;
+  filter: none;
 }
 
 .pack-fan img:nth-child(2) {
@@ -661,4 +668,85 @@
 
 .related {
   margin-top: var(--section-y);
+}
+
+/* Grid children default to min-width:auto, so the scrolling thumbnail strip
+   (7 × 76px) would widen the single mobile column past the viewport. */
+.pdp__grid > *,
+.gallery {
+  min-width: 0;
+}
+
+@media (max-width: 760px) {
+  /* Two rows of chips + sort would pin ~120px of a phone screen while browsing */
+  .toolbar {
+    position: static;
+  }
+  .crumbs a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+  }
+  .crumbs {
+    row-gap: 0;
+  }
+  .buy__title {
+    font-size: clamp(2rem, 9vw, 2.6rem);
+  }
+  .buy__actions .qty {
+    flex: none;
+  }
+  .details {
+    margin-top: var(--s-8);
+  }
+}
+
+/* Mobile buy bar: keeps price + Add one thumb-tap away once the main button scrolls off */
+.buy-bar {
+  display: none;
+}
+
+@media (max-width: 900px) {
+  .buy-bar {
+    position: fixed;
+    inset: auto 0 0;
+    z-index: 40;
+    display: flex;
+    align-items: center;
+    gap: var(--s-4);
+    padding: 0.7rem var(--gutter) calc(0.7rem + var(--safe-b));
+    background: rgba(246, 241, 231, 0.94);
+    backdrop-filter: saturate(1.3) blur(12px);
+    -webkit-backdrop-filter: saturate(1.3) blur(12px);
+    border-top: 1px solid var(--line);
+    transform: translateY(110%);
+    transition: transform 320ms var(--ease-drawer);
+  }
+  .buy-bar[data-visible="true"] {
+    transform: none;
+  }
+  .buy-bar__info {
+    flex: 1;
+    min-width: 0;
+    display: grid;
+  }
+  .buy-bar__name {
+    font-weight: 600;
+    font-size: var(--fs-small);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .buy-bar .btn {
+    flex: none;
+  }
+  .pdp {
+    padding-bottom: calc(var(--section-y) + 80px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .buy-bar {
+    transition-duration: 1ms;
+  }
 }

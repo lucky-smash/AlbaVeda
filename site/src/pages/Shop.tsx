@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { Link, NavLink, useSearchParams } from "react-router-dom";
 import { ProductCard } from "../components/ProductCard";
-import { categories, getCategory, img, lowestPrice, products, productsIn, searchProducts, type CategoryId } from "../data/catalog";
+import { categories, getCategory, getProduct, img, lowestPrice, products, productsIn, searchProducts, type CategoryId } from "../data/catalog";
 import { usePageMeta } from "../lib/meta";
 import { useReveal } from "../lib/motion";
 
@@ -12,6 +12,31 @@ const SORTS: { id: Sort; label: string }[] = [
   { id: "price-desc", label: "Price: high to low" },
   { id: "name", label: "Name A–Z" },
 ];
+
+/**
+ * Header pack fan: three clean front-of-pack shots per shelf, picked by hand. The first photo of
+ * a product isn't always a packshot (Hawan Samagri 1 kg only has a lifestyle photo), and the
+ * first three products of a shelf aren't always its most representative.
+ * Entries are [product id, image index]; each has a background-free cut-out in /img/fan/
+ * so overlapping packs stack cleanly instead of blending through each other.
+ */
+const FAN: Record<CategoryId | "all", [string, number][]> = {
+  all: [["multani-mitti-carton", 0], ["moringa-powder", 0], ["shikakai-amla-reetha", 0]],
+  "skin-care": [["nikhar-ubtan", 0], ["multani-mitti-carton", 0], ["orange-peel-powder", 0]],
+  "hair-care": [["shikakai-amla-reetha", 0], ["amla-powder", 0], ["reetha-powder", 0]],
+  beauty: [["indigo-powder", 0], ["herbal-henna", 0], ["beetroot-powder", 0]],
+  wellness: [["ashwagandha-powder", 0], ["moringa-powder", 0], ["tulsi-powder", 0]],
+  devotional: [["hawan-samagri", 0], ["pooja-kit", 0], ["hawan-samagri", 2]],
+};
+
+function fanFor(category?: CategoryId) {
+  const picks = FAN[category ?? "all"].flatMap(([id, i]) =>
+    getProduct(id)?.images[i] ? [{ key: `${id}-${i}`, src: `/img/fan/${id}-${i}.webp`, cut: true }] : [],
+  );
+  if (picks.length === 3) return picks;
+  // catalogue changed under us: fall back to the shelf's first packs (white studio backgrounds)
+  return (category ? productsIn(category) : products).slice(0, 3).map((p) => ({ key: p.id, src: img(p.images[0], 480), cut: false }));
+}
 
 export default function Shop({ category }: { category?: CategoryId }) {
   const [params, setParams] = useSearchParams();
@@ -35,7 +60,7 @@ export default function Shop({ category }: { category?: CategoryId }) {
   );
 
   const ref = useReveal<HTMLDivElement>([category, q, sort]);
-  const fan = (category ? productsIn(category) : products).slice(0, 3);
+  const fan = fanFor(category);
 
   const setSort = (s: Sort) => {
     const next = new URLSearchParams(params);
@@ -78,8 +103,16 @@ export default function Shop({ category }: { category?: CategoryId }) {
           </div>
           {!q && (
             <div className="pack-fan" aria-hidden>
-              {fan.map((p, i) => (
-                <img key={p.id} src={img(p.images[0], 480)} alt="" width={480} height={480} style={{ "--i": i } as React.CSSProperties} />
+              {fan.map((f, i) => (
+                <img
+                  key={f.key}
+                  src={f.src}
+                  alt=""
+                  width={480}
+                  height={480}
+                  data-cut={f.cut}
+                  style={{ "--i": i } as React.CSSProperties}
+                />
               ))}
             </div>
           )}
