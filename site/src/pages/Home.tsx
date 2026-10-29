@@ -1,23 +1,15 @@
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { Link } from "react-router-dom";
 import { AddToBag } from "../components/AddToBag";
 import { ArrowRight, External, Sprig } from "../components/Icons";
 import { Price } from "../components/Price";
 import { ProductCard } from "../components/ProductCard";
 import { StoryStage } from "../components/StoryStage";
-import { categories, getProduct, img, lifeImg, products, productsIn, type CategoryId } from "../data/catalog";
+import { getProduct, img, lifeImg, products } from "../data/catalog";
 import { aboutCopy, brands, certifications, company, FREE_DELIVERY_THRESHOLD, featuredIds, herbs, marketplaces, social } from "../data/site";
 import { formatPrice } from "../lib/format";
 import { useReveal } from "../lib/motion";
 import { usePageMeta } from "../lib/meta";
-
-const CATEGORY_FACE: Record<CategoryId, string> = {
-  "skin-care": "multani-mitti-carton",
-  "hair-care": "herbal-henna",
-  beauty: "ubtan-facepack",
-  wellness: "moringa-powder",
-  devotional: "pooja-kit",
-};
 
 export default function Home() {
   usePageMeta(
@@ -30,7 +22,6 @@ export default function Home() {
       <StoryStage />
       <div ref={ref}>
         <BrandIntro />
-        <CategoryIndex />
         <Featured />
         <HerbIndex />
         <Heritage />
@@ -73,70 +64,6 @@ function BrandIntro() {
           <Link to="/about" className="link-arrow" data-reveal>
             Our story <ArrowRight />
           </Link>
-        </div>
-      </div>
-    </section>
-  );
-}
-
-function CategoryIndex() {
-  const listRef = useRef<HTMLDivElement>(null);
-  const previewRef = useRef<HTMLDivElement>(null);
-  const [hovered, setHovered] = useState<CategoryId | null>(null);
-
-  const onMove = (e: React.PointerEvent) => {
-    if (e.pointerType !== "mouse" || !listRef.current || !previewRef.current) return;
-    const r = listRef.current.getBoundingClientRect();
-    previewRef.current.style.transform = `translate3d(${e.clientX - r.left}px, ${e.clientY - r.top}px, 0)`;
-  };
-
-  return (
-    <section id="categories" className="cats section" aria-labelledby="cats-title">
-      <div className="wrap">
-        <div className="section-head">
-          <h2 id="cats-title" className="h2" data-reveal>
-            Shop by <span className="accent">ritual</span>
-          </h2>
-          <p className="lead" data-reveal>
-            Five shelves, {products.length} products. Every one made from herbs, clays and botanicals you can name.
-          </p>
-        </div>
-        <div className="cats__wrap" ref={listRef} onPointerMove={onMove} onPointerLeave={() => setHovered(null)}>
-        <ul className="cats__list" role="list">
-          {categories.map((c, i) => {
-            const face = getProduct(CATEGORY_FACE[c.id])!;
-            return (
-              <li key={c.id} data-reveal style={{ "--i": i } as React.CSSProperties}>
-                <Link
-                  to={`/${c.id}`}
-                  className="cats__row"
-                  onPointerEnter={(e) => e.pointerType === "mouse" && setHovered(c.id)}
-                  onFocus={() => setHovered(null)}
-                >
-                  <span className="cats__num">0{i + 1}</span>
-                  <span className="cats__label">{c.label}</span>
-                  <span className="cats__line">{c.headline}</span>
-                  <span className="cats__count">{productsIn(c.id).length} products</span>
-                  <img className="cats__thumb" src={img(face.images[0], 480)} alt="" width={64} height={64} loading="lazy" />
-                  <ArrowRight className="cats__arrow" />
-                </Link>
-              </li>
-            );
-          })}
-        </ul>
-          <div className="cats__preview" ref={previewRef} aria-hidden data-visible={hovered !== null}>
-            {categories.map((c) => (
-              <img
-                key={c.id}
-                src={img(getProduct(CATEGORY_FACE[c.id])!.images[0], 480)}
-                alt=""
-                data-shown={hovered === c.id}
-                width={240}
-                height={240}
-                loading="lazy"
-              />
-            ))}
-          </div>
         </div>
       </div>
     </section>

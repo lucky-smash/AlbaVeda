@@ -7,7 +7,8 @@ export default defineConfig({
   build: {
     target: "es2022",
     // The only chunk above the default limit is the Three.js stage, which is
-    // dynamically imported after first paint on the homepage only.
-    chunkSizeWarningLimit: 650,
+    // dynamically imported after first paint on the homepage only (three.js +
+    // GLTFLoader for the amla tree model).
+    chunkSizeWarningLimit: 700,
   },
 });

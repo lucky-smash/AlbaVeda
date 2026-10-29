@@ -24,20 +24,26 @@ export function StoryStage() {
   const chapterRefs = useRef<(HTMLElement | null)[]>([]);
   const anchors = useRef<number[]>([0]);
 
-  /* ---- scroll → story position (piecewise-linear between section centres) */
+  /*
+   * Scroll → story position, piecewise-linear between anchors:
+   *   0 hero · 1..n-1 chapter centres · n last chapter pinned · n+1 end of its hold.
+   * The last chapter's copy is CSS-sticky while the scene plays the clay crush (n → n+1).
+   */
   const measure = useCallback(() => {
     const stage = stageRef.current;
     if (!stage) return;
     const vh = window.innerHeight;
     const stageTop = stage.getBoundingClientRect().top + window.scrollY;
-    anchors.current = [
-      stageTop,
-      ...chapterRefs.current.map((el) => {
-        if (!el) return stageTop;
-        const r = el.getBoundingClientRect();
-        return r.top + window.scrollY + r.height / 2 - vh / 2;
-      }),
-    ];
+    const els = chapterRefs.current;
+    const docTop = (el: HTMLElement) => el.getBoundingClientRect().top + window.scrollY;
+    const list = [stageTop];
+    els.forEach((el, i) => {
+      if (!el) return;
+      const top = docTop(el);
+      if (i < els.length - 1) list.push(top + el.offsetHeight / 2 - vh / 2);
+      else list.push(top, top + el.offsetHeight - vh);
+    });
+    anchors.current = list;
   }, []);
 
   const storyAt = useCallback((y: number) => {
@@ -55,7 +61,7 @@ export function StoryStage() {
       raf = 0;
       const f = storyAt(window.scrollY);
       sceneRef.current?.setStory(f);
-      setActive(Math.round(f));
+      setActive(Math.min(chapters.length, Math.round(f)));
     };
     const onScroll = () => {
       if (!raf) raf = requestAnimationFrame(update);
@@ -150,10 +156,6 @@ export function StoryStage() {
     };
   }, [tier, storyAt]);
 
-  const skip = () => {
-    sceneRef.current?.skipIntro();
-  };
-
   const isStatic = tier === "static";
 
   return (
@@ -185,9 +187,6 @@ export function StoryStage() {
                 <Link to="/shop" className="btn btn--primary">
                   Shop all products <ArrowRight />
                 </Link>
-                <a href="#categories" className="btn btn--ghost">
-                  Browse categories
-                </a>
               </div>
               <nav className="hero__cats hero-in" aria-label="Shop by category" style={{ "--d": 4 } as React.CSSProperties}>
                 {categories.map((c) => (
@@ -202,9 +201,6 @@ export function StoryStage() {
             <p className="hero__hint">
               <ArrowDown /> Scroll — from leaf to pack
             </p>
-            <button type="button" className="skip-intro" onClick={skip} data-visible={introPlaying} tabIndex={introPlaying ? 0 : -1}>
-              Skip intro
-            </button>
           </div>
         </header>
 
@@ -214,7 +210,7 @@ export function StoryStage() {
           return (
             <article
               key={c.productId}
-              className="chapter"
+              className={`chapter${i === chapters.length - 1 ? " chapter--hold" : ""}`}
               ref={(el) => {
                 chapterRefs.current[i] = el;
               }}

@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/addons/geometries/RoundedBoxGeometry.js";
+import { GLTFLoader } from "three/addons/loaders/GLTFLoader.js";
 import {
   clamp01,
   damp,
@@ -12,6 +13,8 @@ import {
   range,
   smooth,
 } from "./util";
+import { ClayCrush } from "./ClayCrush";
+import { ClayHeap } from "./ClayHeap";
 
 /**
  * The AlbaVeda botanical stage.
@@ -21,8 +24,8 @@ import {
  *   the real Moringa pack materialises → (scroll) chapters flip the pack to
  *   other real products while the scene changes around it:
  *     ch.1 Moringa  — leafy sprouts
- *     ch.2 Amla · Reetha · Shikakai — sprouts settle, amla fruit rises
- *     ch.3 Multani Mitti — herbs return to bare earth, clay dust
+ *     ch.2 Amla · Reetha · Shikakai — sprouts settle, fruiting amla trees grow
+ *     ch.3 Multani Mitti — every plant recedes, the ground turns to sun-baked clay, clay dust
  *
  * All state is a pure function of (introT, story) so scrolling backwards,
  * skipping, or scrolling during the intro always resolves to a coherent frame.
@@ -47,11 +50,14 @@ export interface SceneOptions {
 const PACK_H = 1.25;
 const PACK_ASPECT = 0.627; // measured from the cropped carton photography
 const PACK_W = PACK_H * PACK_ASPECT;
-const PACK_D = 0.09;
+const PACK_D = 0.26; // ~1/3 of the width, like a real powder carton
 const PACK_Y = PACK_H / 2 + 0.035;
 export const INTRO_LEN = 5.2;
 
 const SOIL_FOG = new THREE.Color("#18120d");
+// Multani Mitti chapter: dark loam gives way to a dusty ochre clay pan under a warm haze
+const CLAY_FOG = new THREE.Color("#5a391f");
+const CLAY_SKY_HIGH = new THREE.Color("#6e4a30");
 
 interface Sprout {
   mesh: THREE.Mesh<THREE.TubeGeometry, THREE.MeshStandardMaterial>;
@@ -89,8 +95,14 @@ export class BotanicalScene {
   private sprouts: Sprout[] = [];
   private leafMesh!: THREE.InstancedMesh;
   private rachisMesh!: THREE.InstancedMesh;
-  private amla!: THREE.InstancedMesh;
-  private amlaBase: { pos: THREE.Vector3; rot: THREE.Euler; s: number }[] = [];
+  private clay!: ClayCrush;
+  private heap!: ClayHeap;
+  private amlaGroup = new THREE.Group();
+  private amlaTrees: { obj: THREE.Object3D; s: number; yaw: number; shadow: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>; w: number }[] = [];
+  private amlaGrowth = 0; // only ever rises: once the trees have grown they stay planted
+  private vines: { pivot: THREE.Object3D; top: number; phase: number }[] = [];
+  private foliageTime = { value: 0 };
+  private earthMix = { value: 0 }; // 0 dark loam → 1 Multani clay ground
   private pack = new THREE.Group();
   private packMesh!: THREE.Mesh;
   private packFront!: THREE.MeshStandardMaterial;
@@ -140,9 +152,16 @@ export class BotanicalScene {
     this.buildSoil();
     this.buildSprouts();
     this.buildAmla();
+    this.buildTreeline();
+    this.buildVines();
     this.buildPack();
     this.buildPowder();
     this.buildDust();
+    this.clay = new ClayCrush(opts.tier, (x, z) => this.soilHeight(x, z), this.renderer.getPixelRatio());
+    this.scene.add(this.clay.group);
+    // Hero: a heap of real Multani Mitti at the pack's front-right foot, clear of the sprouts
+    this.heap = new ClayHeap(opts.tier, 0.56, 0.95, this.soilHeight(0.56, 0.95));
+    this.scene.add(this.heap.group);
 
     if (!opts.playIntro) {
       this.introT = INTRO_LEN;
@@ -164,6 +183,9 @@ export class BotanicalScene {
         uLight: { value: new THREE.Vector3(0.62, 0.22, -0.75).normalize() },
         uTint: { value: new THREE.Color("#9dbb6a") },
         uTintMix: { value: 0 },
+        uEarthMix: this.earthMix,
+        uClayLow: { value: CLAY_FOG },
+        uClayHigh: { value: CLAY_SKY_HIGH },
       },
       vertexShader: /* glsl */ `
         varying vec3 vDir;
@@ -175,11 +197,14 @@ export class BotanicalScene {
         uniform vec3 uLight;
         uniform vec3 uTint;
         uniform float uTintMix;
+        uniform float uEarthMix;
+        uniform vec3 uClayLow;
+        uniform vec3 uClayHigh;
         varying vec3 vDir;
         void main() {
           // linear values; "low" equals the fog colour so the soil melts into the horizon
-          vec3 low = vec3(0.0091, 0.0062, 0.0040);
-          vec3 high = vec3(0.022, 0.014, 0.009);
+          vec3 low = mix(vec3(0.0091, 0.0062, 0.0040), uClayLow, uEarthMix);
+          vec3 high = mix(vec3(0.022, 0.014, 0.009), uClayHigh, uEarthMix);
           float above = smoothstep(-0.02, 0.32, vDir.y);
           vec3 col = mix(low, high, above);
           float g = max(dot(vDir, uLight), 0.0);
@@ -240,9 +265,13 @@ export class BotanicalScene {
     geo.rotateX(-Math.PI / 2);
     const pos = geo.attributes.position as THREE.BufferAttribute;
     const colors = new Float32Array(pos.count * 3);
+    const clayColors = new Float32Array(pos.count * 3);
     const dark = new THREE.Color("#22180f");
     const mid = new THREE.Color("#3a2919");
     const crest = new THREE.Color("#55402b");
+    const clayDark = new THREE.Color("#8a6040");
+    const clayMid = new THREE.Color("#b88a5c");
+    const clayCrest = new THREE.Color("#dcb98a");
     const c = new THREE.Color();
     for (let i = 0; i < pos.count; i++) {
       const x = pos.getX(i);
@@ -250,10 +279,15 @@ export class BotanicalScene {
       const h = this.soilHeight(x, z);
       pos.setY(i, h);
       const speck = fbm(x * 9.0, z * 9.0, 2);
-      c.copy(dark).lerp(mid, clamp01(0.45 + h * 3.5)).lerp(crest, clamp01((speck - 0.55) * 2.2));
+      const lift = clamp01(0.45 + h * 3.5);
+      const fleck = clamp01((speck - 0.55) * 2.2);
+      c.copy(dark).lerp(mid, lift).lerp(crest, fleck);
       colors.set([c.r, c.g, c.b], i * 3);
+      c.copy(clayDark).lerp(clayMid, lift).lerp(clayCrest, fleck);
+      clayColors.set([c.r, c.g, c.b], i * 3);
     }
     geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
+    geo.setAttribute("clayColor", new THREE.BufferAttribute(clayColors, 3));
     geo.computeVertexNormals();
 
     const grain = makeGrainTexture(full ? 512 : 256);
@@ -267,6 +301,16 @@ export class BotanicalScene {
       roughness: 1,
       metalness: 0,
     });
+    mat.onBeforeCompile = (shader) => {
+      shader.uniforms.uEarthMix = this.earthMix;
+      shader.vertexShader = shader.vertexShader
+        .replace("#include <common>", "#include <common>\nattribute vec3 clayColor;\nvarying vec3 vClay;")
+        .replace("#include <color_vertex>", "#include <color_vertex>\nvClay = clayColor;");
+      shader.fragmentShader = shader.fragmentShader
+        .replace("#include <common>", "#include <common>\nuniform float uEarthMix;\nvarying vec3 vClay;")
+        .replace("#include <color_fragment>", "diffuseColor.rgb *= mix(vColor.rgb, vClay, uEarthMix);");
+    };
+    mat.customProgramCacheKey = () => "soil-earth";
     const soil = new THREE.Mesh(geo, mat);
     soil.receiveShadow = full;
     this.scene.add(soil);
@@ -420,49 +464,218 @@ export class BotanicalScene {
     this.scene.add(this.rachisMesh);
   }
 
+  /** Fruiting amla saplings either side of the pack — amla grows on trees, not from the soil. */
   private buildAmla() {
     const full = this.opts.tier === "full";
-    const geo = new THREE.SphereGeometry(1, 40, 24);
-    // Amla carries six faint vertical lobes and is slightly flattened.
-    const pos = geo.attributes.position as THREE.BufferAttribute;
-    for (let i = 0; i < pos.count; i++) {
-      this.tmpV.fromBufferAttribute(pos, i);
-      const phi = Math.atan2(this.tmpV.z, this.tmpV.x);
-      const groove = 1 - 0.045 * Math.pow(0.5 + 0.5 * Math.cos(phi * 6), 3) * (1 - Math.abs(this.tmpV.y));
-      this.tmpV.multiplyScalar(groove);
-      this.tmpV.y *= 0.86;
-      pos.setXYZ(i, this.tmpV.x, this.tmpV.y, this.tmpV.z);
-    }
-    geo.computeVertexNormals();
-    const mat = full
-      ? new THREE.MeshPhysicalMaterial({ color: "#c3cf72", roughness: 0.36, clearcoat: 0.35, clearcoatRoughness: 0.35, sheen: 0.3, sheenColor: new THREE.Color("#f3f7c9") })
-      : new THREE.MeshStandardMaterial({ color: "#c3cf72", roughness: 0.4 });
+    // [x, z, height, yaw]: behind the pack's shoulders so the label stays clear
     const spots = [
-      [-0.78, 0.42, 0.075],
-      [-0.6, 0.62, 0.062],
-      [0.72, 0.5, 0.07],
-      [0.92, 0.18, 0.066],
-      [-1.05, 0.05, 0.068],
-      [0.52, 0.74, 0.058],
-      [1.22, 0.62, 0.06],
+      [-0.78, -0.95, 1.6, 0.6],
+      [0.98, -1.05, 1.4, 2.4],
     ];
-    this.amla = new THREE.InstancedMesh(geo, mat, spots.length);
-    this.amla.castShadow = full;
-    this.amla.frustumCulled = false;
-    const rnd = mulberry32(31);
-    for (const [x, z, s] of spots) {
-      this.amlaBase.push({
-        pos: new THREE.Vector3(x, this.soilHeight(x, z) + s * 0.8, z),
-        rot: new THREE.Euler(rnd() * 0.5, rnd() * 6, rnd() * 0.5),
-        s,
+    this.amlaGroup.visible = false;
+    this.scene.add(this.amlaGroup);
+
+    // Soft contact shadow under each canopy so the trees sit in the soil, not on it
+    const shadowTex = makeRadialTexture("rgba(5,3,2,0.8)", "rgba(5,3,2,0)");
+
+    new GLTFLoader().load("/models/amla-tree.glb", (gltf) => {
+      if (this.disposed) return;
+      const model = gltf.scene;
+      // Normalise: trunk base at the origin, unit height
+      const box = new THREE.Box3().setFromObject(model);
+      const size = box.getSize(new THREE.Vector3());
+      const centre = box.getCenter(new THREE.Vector3());
+      model.position.set(-centre.x, -box.min.y, -centre.z);
+      model.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        mesh.castShadow = full;
+        mesh.receiveShadow = full;
+        mesh.geometry.computeBoundingBox();
+        const gb = mesh.geometry.boundingBox!;
+        const mat = (mesh.material as THREE.MeshStandardMaterial).clone();
+        mat.roughness = 0.72;
+        mat.envMapIntensity = 0;
+        this.addFoliageShader(mat, gb);
+        mesh.material = mat;
       });
-    }
-    this.scene.add(this.amla);
+      spots.forEach(([x, z, h, yaw], i) => {
+        const tree = new THREE.Group();
+        tree.add(i === 0 ? model : model.clone());
+        const y = this.soilHeight(x, z);
+        tree.position.set(x, y - 0.02, z);
+        tree.rotation.y = yaw;
+        tree.scale.setScalar(0.0001);
+        this.amlaGroup.add(tree);
+
+        const shadow = new THREE.Mesh(
+          new THREE.PlaneGeometry(1, 1),
+          new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthWrite: false, opacity: 0, polygonOffset: true, polygonOffsetFactor: -2 }),
+        );
+        shadow.rotation.x = -Math.PI / 2;
+        shadow.position.set(x + 0.08, y + 0.012, z + 0.06);
+        shadow.renderOrder = 1;
+        this.amlaGroup.add(shadow);
+
+        this.amlaTrees.push({ obj: tree, s: h / size.y, yaw, shadow, w: Math.max(size.x, size.z) * (h / size.y) });
+      });
+    });
+  }
+
+  /**
+   * A grove of real broadleaf trees on the horizon gives the garden depth. Two variants, instanced;
+   * the fog melts them into the sky so they read as silhouettes behind the lit foreground.
+   */
+  private buildTreeline() {
+    const full = this.opts.tier === "full";
+    new GLTFLoader().load("/models/treeline.glb", (gltf) => {
+      if (this.disposed) return;
+      gltf.scene.updateMatrixWorld(true);
+      const variants: { mesh: THREE.InstancedMesh; base: THREE.Matrix4; h: number }[] = [];
+      const count = full ? 18 : 10;
+      gltf.scene.traverse((o) => {
+        const src = o as THREE.Mesh;
+        if (!src.isMesh) return;
+        // Keep the node's rotation/scale (the geometry is quantized), drop its offset, stand it on its base
+        src.geometry.computeBoundingBox();
+        const gb = src.geometry.boundingBox!;
+        src.matrixWorld.decompose(this.tmpV, this.tmpQ, this.tmpS);
+        const base = new THREE.Matrix4()
+          .compose(new THREE.Vector3(), this.tmpQ, this.tmpS)
+          .multiply(new THREE.Matrix4().makeTranslation(-(gb.min.x + gb.max.x) / 2, -gb.min.y, -(gb.min.z + gb.max.z) / 2));
+        const h = gb.clone().applyMatrix4(base).getSize(this.tmpV).y;
+        const mat = (src.material as THREE.MeshStandardMaterial).clone();
+        // Leaf cards: alpha-test instead of blending so they sort and fog correctly
+        mat.transparent = false;
+        mat.alphaTest = 0.5;
+        mat.side = THREE.DoubleSide;
+        mat.roughness = 0.9;
+        mat.color.set("#9fae86");
+        const mesh = new THREE.InstancedMesh(src.geometry, mat, count);
+        mesh.frustumCulled = false;
+        variants.push({ mesh, base, h });
+      });
+      if (!variants.length) return;
+
+      const rnd = mulberry32(53);
+      const used = variants.map(() => 0);
+      for (let i = 0; i < count; i++) {
+        const a = lerp(-Math.PI * 0.97, -Math.PI * 0.03, (i + rnd() * 0.8) / count);
+        const r = 4.6 + rnd() * 3.2;
+        const x = Math.cos(a) * r * 1.5;
+        const z = Math.sin(a) * r - 0.8;
+        const v = variants[i % variants.length];
+        const height = 2.4 + rnd() * 1.6;
+        this.tmpQ.setFromAxisAngle(this.tmpS.set(0, 1, 0), rnd() * Math.PI * 2);
+        this.tmpM.compose(this.tmpV.set(x, this.soilHeight(x, z) - 0.05, z), this.tmpQ, this.tmpS.setScalar(height / v.h)).multiply(v.base);
+        v.mesh.setMatrixAt(used[i % variants.length]++, this.tmpM);
+      }
+      variants.forEach((v, i) => {
+        v.mesh.count = used[i];
+        this.scene.add(v.mesh);
+      });
+    });
+  }
+
+  /** Bel (creeper) hanging into frame from an overhanging branch; swings gently, lifts away when the amla trees grow. */
+  private buildVines() {
+    // [x, z, length, yaw, top]: hung from just above the frame edge (y ≈ 1.6–1.8 at these depths),
+    // either side of the pack, clear of the label and the copy column
+    const spots = [
+      [0.95, 0.1, 1.15, 0.4, 1.8],
+      [-0.62, -0.55, 1.0, 2.6, 1.9],
+    ];
+    new GLTFLoader().load("/models/vine.glb", (gltf) => {
+      if (this.disposed) return;
+      const model = gltf.scene;
+      const box = new THREE.Box3().setFromObject(model);
+      const size = box.getSize(new THREE.Vector3());
+      const centre = box.getCenter(new THREE.Vector3());
+      // pivot at the branch the vine hangs from
+      model.position.set(-centre.x, -box.max.y, -centre.z);
+      model.traverse((o) => {
+        const mesh = o as THREE.Mesh;
+        if (!mesh.isMesh) return;
+        const mat = (mesh.material as THREE.MeshStandardMaterial).clone();
+        mat.roughness = 0.7;
+        mat.color.set("#c9d6bb"); // settle the bright studio green into the dusk grade
+        mesh.material = mat;
+        mesh.castShadow = this.opts.tier === "full";
+      });
+      spots.forEach(([x, z, len, yaw, top], i) => {
+        const pivot = new THREE.Group();
+        pivot.add(i === 0 ? model : model.clone());
+        pivot.position.set(x, top, z);
+        pivot.rotation.y = yaw;
+        pivot.scale.setScalar(len / size.y);
+        this.scene.add(pivot);
+        this.vines.push({ pivot, top, phase: i * 2.1 });
+      });
+    });
+  }
+
+  /**
+   * Gives the baked-texture tree real depth: canopy self-occlusion (darker toward the trunk and
+   * the lower branches), a slightly muted grade so it sits in the dusk light, and wind that bends
+   * the crown while the trunk stays rooted.
+   */
+  private addFoliageShader(mat: THREE.MeshStandardMaterial, gb: THREE.Box3) {
+    const uniforms = {
+      uTime: this.foliageTime,
+      uMinY: { value: gb.min.y },
+      uSpanY: { value: Math.max(gb.max.y - gb.min.y, 1e-4) },
+      uAxis: { value: new THREE.Vector2((gb.min.x + gb.max.x) / 2, (gb.min.z + gb.max.z) / 2) },
+      uRadius: { value: Math.max(gb.max.x - gb.min.x, gb.max.z - gb.min.z) / 2 },
+    };
+    mat.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, uniforms);
+      shader.vertexShader = shader.vertexShader
+        .replace(
+          "#include <common>",
+          /* glsl */ `#include <common>
+          uniform float uTime, uMinY, uSpanY, uRadius;
+          uniform vec2 uAxis;
+          varying float vOcc;`,
+        )
+        .replace(
+          "#include <begin_vertex>",
+          /* glsl */ `#include <begin_vertex>
+          float hgt = clamp((position.y - uMinY) / uSpanY, 0.0, 1.0);
+          vec2 off = position.xz - uAxis;
+          float rad = clamp(length(off) / uRadius, 0.0, 1.0);
+          // crown sways, trunk base stays put; leaf tips flutter a little faster
+          float bend = hgt * hgt;
+          float phase = dot(modelMatrix[3].xz, vec2(1.7, 2.3));
+          float gust = sin(uTime * 0.9 + phase) * 0.6 + sin(uTime * 1.7 + phase * 1.3) * 0.4;
+          transformed.x += gust * 0.022 * uSpanY * bend;
+          transformed.z += cos(uTime * 1.1 + phase) * 0.012 * uSpanY * bend;
+          float flutter = sin(uTime * 4.2 + position.x * 23.0 + position.z * 17.0) * 0.004 * uSpanY;
+          transformed.y += flutter * rad * hgt;
+          // occlusion: inner canopy and lower branches receive less sky
+          float inner = 1.0 - smoothstep(0.0, 0.85, rad);
+          vOcc = mix(0.5, 1.0, smoothstep(0.0, 0.75, hgt)) * (1.0 - inner * 0.42);`,
+        );
+      shader.fragmentShader = shader.fragmentShader
+        .replace("#include <common>", "#include <common>\nvarying float vOcc;")
+        .replace(
+          "#include <map_fragment>",
+          /* glsl */ `#include <map_fragment>
+          float lum = dot(diffuseColor.rgb, vec3(0.299, 0.587, 0.114));
+          diffuseColor.rgb = mix(vec3(lum), diffuseColor.rgb, 0.82) * vec3(0.86, 0.9, 0.8);`,
+        )
+        .replace(
+          "#include <aomap_fragment>",
+          /* glsl */ `#include <aomap_fragment>
+          reflectedLight.indirectDiffuse *= vOcc;
+          reflectedLight.directDiffuse *= mix(0.55, 1.0, vOcc);`,
+        );
+    };
+    mat.customProgramCacheKey = () => "amla-foliage";
   }
 
   private buildPack() {
     const full = this.opts.tier === "full";
-    const geo = new RoundedBoxGeometry(PACK_W, PACK_H, PACK_D, 3, 0.012);
+    const geo = new RoundedBoxGeometry(PACK_W, PACK_H, PACK_D, 3, 0.016);
     const frontParams = { roughness: 0.42, metalness: 0, color: "#ffffff" };
     this.packFront = full
       ? new THREE.MeshPhysicalMaterial({ ...frontParams, clearcoat: 0.3, clearcoatRoughness: 0.45 })
@@ -484,7 +697,7 @@ export class BotanicalScene {
       new THREE.MeshBasicMaterial({ map: makeRadialTexture("rgba(5,3,2,0.75)", "rgba(5,3,2,0)"), transparent: true, depthWrite: false, opacity: 0 }),
     );
     cs.rotation.x = -Math.PI / 2;
-    cs.scale.set(PACK_W * 1.9, PACK_D * 9, 1);
+    cs.scale.set(PACK_W * 1.9, PACK_D * 3.6, 1);
     cs.position.set(0, 0.006, 0.02);
     cs.renderOrder = 1;
     this.contactShadow = cs;
@@ -823,13 +1036,15 @@ export class BotanicalScene {
     const it = this.introT;
     const n = this.opts.packs.length;
     const k = Math.max(0, Math.min(n - 1, this.story - 1)); // chapter float 0..n-1
+    const hold = clamp01(this.story - n); // last chapter pinned: Multani Mitti clay crush
+    const absorb = Math.sin(Math.PI * range(hold, 0.45, 1.0));
     const inStory = clamp01(this.story); // 0 hero → 1 first chapter
 
     /* camera ----------------------------------------------------------- */
     const introE = easeInOutCubic(range(it, 0, 4.7));
     const far = this.portrait ? 1.6 : 1;
     const orbit = lerp(0, -0.26 + k * 0.24, inStory);
-    const dist = lerp(5.05, 4.35, inStory) * far;
+    const dist = lerp(5.05, 4.35, inStory) * far * (1 - smooth(hold) * 0.05); // slow push-in during the crush
     const heroPos = this.tmpV.set(Math.sin(orbit) * dist, lerp(1.08, 0.98, inStory) * (this.portrait ? 1.1 : 1), Math.cos(orbit) * dist);
     const camX = lerp(0.55, heroPos.x, introE) + this.pointer.x * 0.12;
     const camY = lerp(0.3, heroPos.y, introE) + this.pointer.y * 0.06;
@@ -860,20 +1075,29 @@ export class BotanicalScene {
     this.leafMesh.instanceMatrix.needsUpdate = true;
     this.rachisMesh.instanceMatrix.needsUpdate = true;
 
-    /* amla rises in chapter 2 ------------------------------------------ */
-    const amlaUp = easeOutCubic(range(k, 0.4, 1.0)) * (1 - range(k, 1.5, 2.05));
-    this.amla.visible = amlaUp > 0.001;
-    if (this.amla.visible) {
-      this.amlaBase.forEach((a, i) => {
-        const local = clamp01(amlaUp * 1.4 - i * 0.06);
-        this.tmpV.copy(a.pos);
-        this.tmpV.y = lerp(a.pos.y - a.s * 2.2, a.pos.y, local);
-        this.tmpQ.setFromEuler(a.rot);
-        this.tmpS.setScalar(a.s * Math.max(0.0001, local));
-        this.tmpM.compose(this.tmpV, this.tmpQ, this.tmpS);
-        this.amla.setMatrixAt(i, this.tmpM);
+    /* amla trees grow in chapter 2, then recede as Multani Mitti arrives -- */
+    this.amlaGrowth = Math.max(this.amlaGrowth, range(k, 0.4, 1.0));
+    const amlaUp = this.amlaGrowth * (1 - easeInOutCubic(range(k, 1.3, 1.75)));
+    this.amlaGroup.visible = amlaUp > 0.001 && this.amlaTrees.length > 0;
+    this.foliageTime.value = time;
+    if (this.amlaGroup.visible) {
+      this.amlaTrees.forEach((t, i) => {
+        const g = easeOutCubic(clamp01(amlaUp * 1.25 - i * 0.2));
+        // grows up a touch ahead of filling out; wind sway lives in the foliage shader
+        t.obj.scale.set(t.s * Math.max(g, 0.0001), t.s * Math.max(Math.min(1, g * 1.15), 0.0001), t.s * Math.max(g, 0.0001));
+        const sw = t.w * (0.55 + g * 0.6);
+        t.shadow.scale.set(sw, sw * 0.85, 1);
+        t.shadow.material.opacity = g * 0.85;
       });
-      this.amla.instanceMatrix.needsUpdate = true;
+    }
+
+    /* hanging vines frame the moringa chapters, lifting away as the amla trees take the stage */
+    const vineLift = easeInOutCubic(range(k, 0.3, 0.85)) * 1.8;
+    for (const v of this.vines) {
+      v.pivot.position.y = v.top + vineLift;
+      v.pivot.visible = vineLift < 1.79;
+      v.pivot.rotation.x = Math.sin(time * 0.55 + v.phase) * 0.035;
+      v.pivot.rotation.z = Math.sin(time * 0.8 + v.phase * 1.3) * 0.025;
     }
 
     /* pack ------------------------------------------------------------- */
@@ -910,17 +1134,27 @@ export class BotanicalScene {
     this.pack.position.y = PACK_Y + float + settle;
     const yaw = lerp(-0.34, -0.2 + Math.sin(k * 0.9) * 0.08, inStory) + this.pointer.x * 0.16 + flip;
     this.pack.rotation.set(-this.pointer.y * 0.04, yaw, 0);
+    this.pack.scale.setScalar(1 + absorb * 0.022); // the carton "takes in" the clay
     this.pack.updateMatrixWorld();
+    this.clay.update(range(k, 1.62, 2.0), hold, time, this.pack.matrixWorld);
+    // rises once the pack has formed, sinks back as the story moves into chapter 1
+    this.heap.update(range(it, 4.3, 5.2) * (1 - smooth(range(this.story, 0.25, 0.8))));
 
     this.contactShadow.material.opacity = reveal * (1 - Math.abs(Math.sin(flip)) * 0.35);
 
     /* colour story ----------------------------------------------------- */
     const hc = this.lerpPalette(this.haloColors, k);
     this.halo.material.uniforms.uColor.value.copy(hc);
-    this.halo.material.uniforms.uOpacity.value = 0.34 * easeOutCubic(range(it, 3.4, 5)) + burst * 0.12;
+    this.halo.material.uniforms.uOpacity.value = 0.34 * easeOutCubic(range(it, 3.4, 5)) + burst * 0.12 + absorb * 0.14;
     this.halo.quaternion.copy(this.camera.quaternion);
     this.sky.material.uniforms.uTint.value.copy(hc);
     this.sky.material.uniforms.uTintMix.value = inStory;
+    // Multani Mitti: the loam lightens into clay; fog follows so the horizon stays seamless
+    const earth = smooth(range(k, 1.45, 1.95));
+    this.earthMix.value = earth;
+    const fog = this.scene.fog as THREE.Fog;
+    fog.color.copy(SOIL_FOG).lerp(CLAY_FOG, earth);
+    this.renderer.setClearColor(fog.color);
 
     /* powder ----------------------------------------------------------- */
     const pu = this.powder.material.uniforms;
