@@ -44,7 +44,16 @@ export function StoryStage() {
       else list.push(top, top + el.offsetHeight - vh);
     });
     anchors.current = list;
+    reportCopyEdges();
   }, []);
+
+  /** Tell the scene where the copy columns end, so the 3D composition and vines keep clear of them. */
+  const reportCopyEdges = () => {
+    const stage = stageRef.current;
+    const hero = stage?.querySelector<HTMLElement>(".hero__copy");
+    const card = stage?.querySelector<HTMLElement>(".chapter__card");
+    sceneRef.current?.setCopyEdges(hero?.getBoundingClientRect().right ?? 0, card?.getBoundingClientRect().right ?? 0);
+  };
 
   const storyAt = useCallback((y: number) => {
     const a = anchors.current;
@@ -116,7 +125,12 @@ export function StoryStage() {
         }
         introPlayedThisLoad = true;
         sceneRef.current = scene;
-        const sizeTo = () => scene?.resize(canvas.clientWidth, canvas.clientHeight);
+        // Dev-only handle for layout checks (vine/carton/tree screen bounds); stripped from production builds.
+        if (import.meta.env.DEV) (window as unknown as { __albaScene?: BotanicalScene }).__albaScene = scene;
+        const sizeTo = () => {
+          scene?.resize(canvas.clientWidth, canvas.clientHeight);
+          reportCopyEdges();
+        };
         sizeTo();
         scene.setStory(storyAt(window.scrollY));
 

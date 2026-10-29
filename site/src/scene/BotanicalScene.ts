@@ -84,8 +84,20 @@ export class BotanicalScene {
   private heap!: ClayHeap;
   private amlaGroup = new THREE.Group();
   private amlaTrees: { obj: THREE.Object3D; s: number; yaw: number; shadow: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>; w: number }[] = [];
-  private amlaGrowth = 0; // only ever rises: once the trees have grown they stay planted
-  private vines: { pivot: THREE.Object3D; top: number; phase: number }[] = [];
+  private amlaBorn = -1; // scene time the tree model became available
+  /** side: -1 left of the product group, +1 right. unit: model-height → world scale. aspect: width / height. */
+  private vines: { pivot: THREE.Object3D; side: number; phase: number; unit: number; aspect: number }[] = [];
+  private vineP = new THREE.Vector3();
+  private vineQ = new THREE.Vector3();
+  /**
+   * Camera pull-back (≥ 1) so the whole composition — cartons, pack, amla canopies, clay lumps —
+   * stays inside the free zone beside the copy. Measured from projected bounds every frame and damped.
+   */
+  private fit = 1;
+  private lastDt = 1 / 60;
+  /** Right edge (px) of the hero copy and of the chapter copy, reported by the page; 0 = unknown. */
+  private copyEdges = { hero: 0, chapter: 0 };
+  private bounds = { left: 0, right: 0, top: 0 };
   private foliageTime = { value: 0 };
   private earthMix = { value: 0 }; // 0 dark loam → 1 Multani clay ground
   private pack = new THREE.Group();
@@ -95,6 +107,18 @@ export class BotanicalScene {
   private textures: (THREE.Texture | null)[] = [];
   private sideColors: THREE.Color[] = [];
   private shownPack = -1;
+  /** Hero line-up: the other story cartons standing either side of the main pack. */
+  private flanks: {
+    group: THREE.Group;
+    front: THREE.MeshStandardMaterial;
+    sides: THREE.MeshStandardMaterial[];
+    shadow: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
+    index: number;
+    x: number;
+    z: number;
+    yaw: number;
+    applied: boolean;
+  }[] = [];
   private revealUniforms = { uReveal: { value: 0 }, uEdge: { value: new THREE.Color("#9dbb5a") } };
   private contactShadow!: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>;
   private halo!: THREE.Mesh<THREE.PlaneGeometry, THREE.ShaderMaterial>;
@@ -109,6 +133,7 @@ export class BotanicalScene {
   private tmpV = new THREE.Vector3();
   private tmpS = new THREE.Vector3();
   private tmpQ = new THREE.Quaternion();
+  private tmpBox = new THREE.Box3();
 
   constructor(opts: SceneOptions) {
     this.opts = opts;
@@ -333,8 +358,8 @@ export class BotanicalScene {
     const full = this.opts.tier === "full";
     // [x, z, height, yaw]: behind the pack's shoulders so the label stays clear
     const spots = [
-      [-0.78, -0.95, 1.6, 0.6],
-      [0.98, -1.05, 1.4, 2.4],
+      [-0.5, -1.55, 1.5, 0.6],
+      [0.66, -1.6, 1.35, 2.4],
     ];
     this.amlaGroup.visible = false;
     this.scene.add(this.amlaGroup);
@@ -441,14 +466,12 @@ export class BotanicalScene {
     });
   }
 
-  /** Bel (creeper) hanging into frame from an overhanging branch; swings gently, lifts away when the amla trees grow. */
+  /**
+   * Bel (creeper) hanging into frame, one either side of the product group. Placement is
+   * screen-anchored every frame (see placeVines) so the vines never cross copy, header or products.
+   */
   private buildVines() {
-    // [x, z, length, yaw, top]: hung from just above the frame edge (y ≈ 1.6–1.8 at these depths),
-    // either side of the pack, clear of the label and the copy column
-    const spots = [
-      [0.95, 0.1, 1.15, 0.4, 1.8],
-      [-0.62, -0.55, 1.0, 2.6, 1.9],
-    ];
+    const yaws = [0.4, 2.6];
     new GLTFLoader().load("/models/vine.glb", (gltf) => {
       if (this.disposed) return;
       const model = gltf.scene;
@@ -466,16 +489,118 @@ export class BotanicalScene {
         mesh.material = mat;
         mesh.castShadow = this.opts.tier === "full";
       });
-      spots.forEach(([x, z, len, yaw, top], i) => {
+      [1, -1].forEach((side, i) => {
         const pivot = new THREE.Group();
         pivot.add(i === 0 ? model : model.clone());
-        pivot.position.set(x, top, z);
-        pivot.rotation.y = yaw;
-        pivot.scale.setScalar(len / size.y);
+        pivot.rotation.y = yaws[i];
         this.scene.add(pivot);
-        this.vines.push({ pivot, top, phase: i * 2.1 });
+        this.vines.push({ pivot, side, phase: i * 2.1, unit: 1 / size.y, aspect: Math.max(size.x, size.z) / size.y });
       });
     });
+  }
+
+  /** Screen position (px) of a world point under the current camera. */
+  private toScreen(x: number, y: number, z: number) {
+    const v = this.vineQ.set(x, y, z).project(this.camera);
+    return { x: ((v.x + 1) / 2) * this.width, y: ((1 - v.y) / 2) * this.height };
+  }
+
+  /** On-screen extent (px) of everything that must stay clear of the copy: products, canopies, clay lumps. */
+  private measureComposition(clayUp: number) {
+    let left = Infinity;
+    let right = -Infinity;
+    let top = Infinity;
+    const take = (x: number, y: number, z: number, hw: number) => {
+      for (const dx of [-hw, hw]) {
+        const p = this.toScreen(x + dx, y, z);
+        left = Math.min(left, p.x);
+        right = Math.max(right, p.x);
+        top = Math.min(top, p.y);
+      }
+    };
+    take(0, this.pack.position.y + PACK_H / 2, 0, PACK_W / 2);
+    for (const f of this.flanks) if (f.group.visible) take(f.x, f.group.position.y + PACK_H / 2, f.z, PACK_W / 2);
+    if (this.amlaGroup.visible) {
+      for (const t of this.amlaTrees) {
+        const b = this.tmpBox.setFromObject(t.obj);
+        if (b.isEmpty()) continue;
+        // canopy is roughly round: its widest point sits at ~60% of the tree's height
+        const cy = b.min.y + (b.max.y - b.min.y) * 0.6;
+        const cz = (b.min.z + b.max.z) / 2;
+        take((b.min.x + b.max.x) / 2, cy, cz, (b.max.x - b.min.x) / 2);
+        take((b.min.x + b.max.x) / 2, b.max.y, cz, 0);
+      }
+    }
+    if (clayUp > 0.01) {
+      take(0, 1.75, 0.2, 1.3);
+      top = Math.min(top, this.toScreen(0, 1.75, 0.2).y);
+    }
+    this.bounds = { left, right, top };
+  }
+
+  /** Free horizontal zone (px) for the composition at the current story position. */
+  private freeZone(inStory: number) {
+    const W = this.width;
+    const hero = this.copyEdges.hero || W * 0.5;
+    const chapter = this.copyEdges.chapter || W * 0.5;
+    return { left: lerp(hero, chapter, inStory) + W * 0.03, right: W * 0.975 };
+  }
+
+  /** Pull the camera back (smoothly) until the composition fits beside the copy; ease back in when it can. */
+  private updateFit(inStory: number) {
+    if (this.portrait) {
+      this.fit = 1;
+      return;
+    }
+    const centre = this.width * 0.75; // optical centre after the view offset
+    const zone = this.freeZone(inStory);
+    const needL = (centre - this.bounds.left) / Math.max(1, centre - zone.left);
+    const needR = (this.bounds.right - centre) / Math.max(1, zone.right - centre);
+    const need = Math.max(needL, needR);
+    // sizes scale ~1/distance about the centre, so the fit that would make it exactly fit is fit·need
+    const target = clamp01((this.fit * need - 1) / 1.5) * 1.5 + 1;
+    this.fit = damp(this.fit, target, 3.5, this.lastDt);
+  }
+
+  /**
+   * Hang each vine from just under the header, outside the composition's left/right edge, ending
+   * above the tallest product, canopy or clay lump — and on landscape screens never over the copy.
+   */
+  private placeVines(time: number, inStory: number) {
+    if (!this.vines.length) return;
+    const W = this.width;
+    const H = this.height;
+    const { left, right, top } = this.bounds;
+    const phone = this.portrait && W < 760;
+    const headerPx = phone ? 60 : 68;
+    const vineTop = headerPx + 2; // hangs from just under the header bar
+    const vineBottom = Math.max(vineTop + H * 0.07, top - H * 0.03);
+    const lenPx = vineBottom - vineTop;
+    const minX = this.portrait ? W * 0.02 : this.freeZone(inStory).left;
+    const maxX = W * 0.985;
+    const margin = W * 0.012;
+
+    this.camera.getWorldDirection(this.vineQ);
+    const forward = this.vineQ.clone();
+    for (const v of this.vines) {
+      // projected width runs a little over the model's aspect once yawed and swaying
+      const hw = (lenPx * v.aspect * 1.3) / 2;
+      let sx = v.side < 0 ? left - margin - hw : right + margin + hw;
+      sx = Math.min(Math.max(sx, minX + hw), maxX - hw);
+      // unproject the top anchor onto a plane just in front of the products
+      const nx = (sx / W) * 2 - 1;
+      const ny = 1 - (vineTop / H) * 2;
+      const dir = this.vineP.set(nx, ny, 0.5).unproject(this.camera).sub(this.camera.position).normalize();
+      const VINE_Z = 0.45;
+      const t = (VINE_Z - this.camera.position.z) / dir.z;
+      const p = dir.multiplyScalar(t).add(this.camera.position);
+      const depth = p.clone().sub(this.camera.position).dot(forward);
+      const worldPerPx = (2 * depth * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2))) / H;
+      v.pivot.position.copy(p);
+      v.pivot.scale.setScalar(lenPx * worldPerPx * v.unit);
+      v.pivot.rotation.x = Math.sin(time * 0.55 + v.phase) * 0.035;
+      v.pivot.rotation.z = Math.sin(time * 0.8 + v.phase * 1.3) * 0.025;
+    }
   }
 
   /**
@@ -566,6 +691,7 @@ export class BotanicalScene {
     cs.renderOrder = 1;
     this.contactShadow = cs;
     this.scene.add(cs);
+    this.buildLineup(geo, cs.material.map!);
 
     // Coloured halo behind the product, tinted per chapter
     const halo = new THREE.Mesh(
@@ -612,6 +738,43 @@ export class BotanicalScene {
         },
       );
     });
+  }
+
+  /** The hero shows all three story cartons together; chapters then focus on one at a time. */
+  private buildLineup(geo: THREE.BufferGeometry, shadowTex: THREE.Texture) {
+    const full = this.opts.tier === "full";
+    // [pack index, x, z, yaw]: at the main pack's shoulders, in front of the amla canopies
+    const spots: [number, number, number, number][] = [
+      [1, -0.66, -0.3, 0.04],
+      [2, 0.8, -0.36, -0.62],
+    ];
+    for (const [index, x, z, yaw] of spots) {
+      if (index >= this.opts.packs.length) continue;
+      const front = full
+        ? new THREE.MeshPhysicalMaterial({ roughness: 0.42, metalness: 0, clearcoat: 0.3, clearcoatRoughness: 0.45 })
+        : new THREE.MeshStandardMaterial({ roughness: 0.42, metalness: 0 });
+      const sides = Array.from({ length: 5 }, () => new THREE.MeshStandardMaterial({ color: "#e9eadf", roughness: 0.5 }));
+      const mesh = new THREE.Mesh(geo, [sides[0], sides[1], sides[2], sides[3], front, sides[4]]);
+      mesh.castShadow = full;
+      const group = new THREE.Group();
+      group.add(mesh);
+      group.scale.setScalar(0.94);
+      group.visible = false;
+      this.scene.add(group);
+
+      const shadow = new THREE.Mesh(
+        new THREE.PlaneGeometry(1, 1),
+        new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthWrite: false, opacity: 0 }),
+      );
+      shadow.rotation.set(-Math.PI / 2, 0, yaw);
+      shadow.scale.set(PACK_W * 1.8, PACK_D * 3.4, 1);
+      shadow.position.set(x, this.soilHeight(x, z) + 0.008, z + 0.02);
+      shadow.renderOrder = 1;
+      shadow.visible = false;
+      this.scene.add(shadow);
+
+      this.flanks.push({ group, front, sides, shadow, index, x, z, yaw, applied: false });
+    }
   }
 
   /** Noise-driven dissolve: the carton materialises from the bottom up, edge-lit like settling powder. */
@@ -808,16 +971,22 @@ export class BotanicalScene {
     if (this.portrait) {
       this.camera.setViewOffset(this.width, this.height, 0, this.height * 0.21, this.width, this.height);
     } else {
-      const shift = this.width > 1100 ? 0.2 : 0.16;
-      this.camera.setViewOffset(this.width, this.height, -this.width * shift, 0, this.width, this.height);
+      // Centre the composition in the free zone right of the copy column (≈ 53–97% of width).
+      this.camera.setViewOffset(this.width, this.height, -this.width * 0.25, 0, this.width, this.height);
     }
     this.camera.updateProjectionMatrix();
+    if (this.portrait) this.fit = 1;
     this.render();
   }
 
   /** Story position: 0 = hero, 1..n = chapters (fractional between). */
   setStory(f: number) {
     this.storyTarget = f;
+  }
+
+  /** Right edges (px, viewport) of the hero copy and chapter copy, so the scene can keep clear of them. */
+  setCopyEdges(hero: number, chapter: number) {
+    this.copyEdges = { hero, chapter };
   }
 
   setPointer(x: number, y: number) {
@@ -871,6 +1040,7 @@ export class BotanicalScene {
     this.raf = requestAnimationFrame(this.frame);
     this.timer.update(now);
     const dt = Math.min(this.timer.getDelta(), 1 / 20);
+    this.lastDt = dt;
     if (!this.introDone) {
       // Hold the reveal until the first pack texture exists, so it never pops in blank.
       const canPass = this.textures[0] || this.introT < 3.3;
@@ -907,8 +1077,9 @@ export class BotanicalScene {
     /* camera ----------------------------------------------------------- */
     const introE = easeInOutCubic(range(it, 0, 4.7));
     const far = this.portrait ? 1.6 : 1;
-    const orbit = lerp(0, -0.26 + k * 0.24, inStory);
-    const dist = lerp(5.05, 4.35, inStory) * far * (1 - smooth(hold) * 0.05); // slow push-in during the crush
+    // gentle orbit across the chapters (wider swings push the background canopies toward the copy)
+    const orbit = lerp(0, -0.14 + k * 0.16, inStory);
+    const dist = lerp(5.05, 4.35, inStory) * far * this.fit * (1 - smooth(hold) * 0.05); // slow push-in during the crush
     const heroPos = this.tmpV.set(Math.sin(orbit) * dist, lerp(1.08, 0.98, inStory) * (this.portrait ? 1.1 : 1), Math.cos(orbit) * dist);
     const camX = lerp(0.55, heroPos.x, introE) + this.pointer.x * 0.12;
     const camY = lerp(0.3, heroPos.y, introE) + this.pointer.y * 0.06;
@@ -916,9 +1087,12 @@ export class BotanicalScene {
     this.camera.position.set(camX, camY, camZ);
     this.camera.lookAt(0, lerp(0.3, 0.64, introE), 0);
 
-    /* amla trees grow in chapter 2, then recede as Multani Mitti arrives -- */
-    this.amlaGrowth = Math.max(this.amlaGrowth, range(k, 0.4, 1.0));
-    const amlaUp = this.amlaGrowth * (1 - easeInOutCubic(range(k, 1.3, 1.75)));
+    /* amla trees grow with the intro sprouts, stand through the hero and the
+       herb chapters, then recede as Multani Mitti arrives ------------------ */
+    if (this.amlaBorn < 0 && this.amlaTrees.length) this.amlaBorn = time;
+    // a late-loading model grows in rather than popping in at full size
+    const sinceLoad = this.amlaBorn < 0 ? 0 : range(time - this.amlaBorn, 0, 1.6);
+    const amlaUp = Math.min(range(it, 1.2, 3.4), sinceLoad) * (1 - easeInOutCubic(range(k, 1.3, 1.75)));
     this.amlaGroup.visible = amlaUp > 0.001 && this.amlaTrees.length > 0;
     this.foliageTime.value = time;
     if (this.amlaGroup.visible) {
@@ -930,15 +1104,6 @@ export class BotanicalScene {
         t.shadow.scale.set(sw, sw * 0.85, 1);
         t.shadow.material.opacity = g * 0.85;
       });
-    }
-
-    /* hanging vines frame the moringa chapters, lifting away as the amla trees take the stage */
-    const vineLift = easeInOutCubic(range(k, 0.3, 0.85)) * 1.8;
-    for (const v of this.vines) {
-      v.pivot.position.y = v.top + vineLift;
-      v.pivot.visible = vineLift < 1.79;
-      v.pivot.rotation.x = Math.sin(time * 0.55 + v.phase) * 0.035;
-      v.pivot.rotation.z = Math.sin(time * 0.8 + v.phase * 1.3) * 0.025;
     }
 
     /* pack ------------------------------------------------------------- */
@@ -983,6 +1148,28 @@ export class BotanicalScene {
 
     this.contactShadow.material.opacity = reveal * (1 - Math.abs(Math.sin(flip)) * 0.35);
 
+    /* hero line-up: the other cartons rise beside the main pack, sink as the story begins */
+    const lineup = range(it, 4.2, 5.2) * (1 - smooth(range(this.story, 0.15, 0.7)));
+    this.flanks.forEach((f, j) => {
+      const tex = this.textures[f.index];
+      if (tex && !f.applied) {
+        f.front.map = tex;
+        f.front.needsUpdate = true;
+        const sc = this.sideColors[f.index];
+        if (sc) for (const m of f.sides) m.color.copy(sc);
+        f.applied = true;
+      }
+      const show = f.applied ? clamp01(lineup * 1.2 - j * 0.2) : 0;
+      f.group.visible = f.shadow.visible = show > 0.001;
+      if (!f.group.visible) return;
+      const e = easeOutCubic(show);
+      // the soil hides whatever is still below ground
+      const bob = Math.sin(time * 0.9 + 1.7 + j * 2.1) * 0.01 * e;
+      f.group.position.set(f.x, PACK_Y * 0.94 - (1 - e) * (PACK_H + 0.12) + bob, f.z);
+      f.group.rotation.set(0, f.yaw + this.pointer.x * 0.12, 0);
+      f.shadow.material.opacity = e * 0.8;
+    });
+
     /* colour story ----------------------------------------------------- */
     const hc = this.lerpPalette(this.haloColors, k);
     this.halo.material.uniforms.uColor.value.copy(hc);
@@ -1017,6 +1204,12 @@ export class BotanicalScene {
     du.uColor.value.copy(this.tmpColor.set("#f2c98f").lerp(hc, 0.3 * inStory));
 
     this.keyLight.intensity = lerp(1.6, 2.4, range(it, 0, 3));
+
+    // Vines go last: they are placed around the products' final positions for this frame.
+    this.camera.updateMatrixWorld();
+    this.measureComposition(range(k, 1.62, 2.0) * (1 - range(hold, 0.3, 0.6)));
+    this.updateFit(inStory);
+    this.placeVines(time, inStory);
   }
 
   private lerpPalette(colors: THREE.Color[], k: number) {
