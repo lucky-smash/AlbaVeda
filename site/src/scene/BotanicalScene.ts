@@ -86,7 +86,19 @@ export class BotanicalScene {
   private amlaTrees: { obj: THREE.Object3D; s: number; yaw: number; shadow: THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>; w: number }[] = [];
   private amlaBorn = -1; // scene time the tree model became available
   /** side: -1 left of the product group, +1 right. unit: model-height → world scale. aspect: width / height. */
-  private vines: { pivot: THREE.Object3D; side: number; phase: number; unit: number; aspect: number }[] = [];
+  private vines: {
+    pivot: THREE.Object3D;
+    side: number;
+    phase: number;
+    unit: number;
+    aspect: number;
+    /** Eased on-screen length and x (px): the targets jump as products move, the vine glides. */
+    len: number;
+    sx: number;
+    /** Pendulum lean from sideways motion, so a moving vine trails and settles. */
+    swing: number;
+    born: number;
+  }[] = [];
   private vineP = new THREE.Vector3();
   private vineQ = new THREE.Vector3();
   /**
@@ -494,9 +506,22 @@ export class BotanicalScene {
       [1, -1].forEach((side, i) => {
         const pivot = new THREE.Group();
         pivot.add(i === 0 ? model : model.clone());
+        // roll about the world axis last, so sway and swing lean the same way whatever the yaw
+        pivot.rotation.order = "ZYX";
         pivot.rotation.y = yaws[i];
         this.scene.add(pivot);
-        this.vines.push({ pivot, side, phase: i * 2.1, unit: 1 / size.y, aspect: Math.max(size.x, size.z) / size.y });
+        pivot.visible = false;
+        this.vines.push({
+          pivot,
+          side,
+          phase: i * 2.1,
+          unit: 1 / size.y,
+          aspect: Math.max(size.x, size.z) / size.y,
+          len: -1,
+          sx: 0,
+          swing: 0,
+          born: -1,
+        });
       });
     });
   }
@@ -590,12 +615,16 @@ export class BotanicalScene {
     const maxX = W * 0.985;
     const margin = W * 0.012;
     const gone = easeInOutCubic(range(k, 1.2, 1.6));
+    const dt = this.lastDt;
 
     this.camera.getWorldDirection(this.vineQ);
     const forward = this.vineQ.clone();
     for (const v of this.vines) {
-      v.pivot.visible = gone < 0.999;
-      if (!v.pivot.visible) continue;
+      if (v.born < 0) v.born = time;
+      // lowered in once the pack has formed (or, if the model arrives late, as soon as it does)
+      const arrive = easeInOutCubic(Math.min(range(this.introT, 3.5, INTRO_LEN), range(time - v.born, 0, 1.6)));
+      const out = Math.max(gone, 1 - arrive);
+      v.pivot.visible = out < 0.999;
       // projected width runs a little over the model's aspect once yawed and swaying
       const column = (len: number) => {
         const hw = (len * v.aspect * 1.3) / 2;
@@ -604,16 +633,30 @@ export class BotanicalScene {
         return { hw, sx };
       };
       // size against the column the vine would occupy at full reach, then settle into the shorter one
-      let lenPx = reach;
+      let targetLen = reach;
       for (let pass = 0; pass < 2; pass++) {
-        const { hw, sx } = column(lenPx);
+        const { hw, sx } = column(targetLen);
         let floor = Infinity;
         for (const s of this.spans) if (s.r > sx - hw && s.l < sx + hw) floor = Math.min(floor, s.top);
-        lenPx = Math.max(minLen, Math.min(reach, floor - H * 0.02 - vineTop));
+        targetLen = Math.max(minLen, Math.min(reach, floor - H * 0.02 - vineTop));
       }
-      const { sx } = column(lenPx);
-      // Multani Mitti: drawn straight up past the header
-      const anchorY = vineTop - gone * (lenPx + vineTop + H * 0.05);
+      const targetSx = column(targetLen).sx;
+      const prevSx = v.sx;
+      if (v.len < 0) {
+        v.len = targetLen;
+        v.sx = targetSx;
+      } else {
+        v.len = damp(v.len, targetLen, 3.2, dt);
+        v.sx = damp(v.sx, targetSx, 3.2, dt);
+      }
+      if (!v.pivot.visible) continue;
+      // sideways travel leans the vine back like a pendulum; it settles once the anchor stops
+      const vel = (v.sx - prevSx) / Math.max(dt, 1e-3) / W;
+      v.swing = damp(v.swing, Math.max(-0.14, Math.min(0.14, -vel * 0.9)), 5, dt);
+      const lenPx = v.len;
+      const sx = v.sx;
+      // Multani Mitti (and the intro): drawn straight up past the header
+      const anchorY = vineTop - out * (lenPx + vineTop + H * 0.05);
       // unproject the top anchor onto a plane just in front of the products
       const nx = (sx / W) * 2 - 1;
       const ny = 1 - (anchorY / H) * 2;
@@ -626,7 +669,7 @@ export class BotanicalScene {
       v.pivot.position.copy(p);
       v.pivot.scale.setScalar(lenPx * worldPerPx * v.unit);
       v.pivot.rotation.x = Math.sin(time * 0.55 + v.phase) * 0.035;
-      v.pivot.rotation.z = Math.sin(time * 0.8 + v.phase * 1.3) * 0.025;
+      v.pivot.rotation.z = Math.sin(time * 0.8 + v.phase * 1.3) * 0.025 + v.swing;
     }
   }
 
