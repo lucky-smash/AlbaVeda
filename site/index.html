@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en-IN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Alba — Ayurvedic, Herbal & Natural Personal Care</title>
+    <meta
+      name="description"
+      content="Alba offers 100% natural Ayurvedic beauty and personal care products — herbal powders for skin, hair and wellness — and Diva devotional products. By Albatross Herbals, since 1991."
+    />
+    <meta name="theme-color" content="#17110d" />
+    <link rel="icon" type="image/png" href="/brand/alba-logo.png" />
+    <meta property="og:title" content="Alba — Ayurvedic, Herbal & Natural Personal Care" />
+    <meta property="og:image" content="/img/pack/moringa-powder.webp" />
+    <link rel="preload" as="image" href="/img/pack/moringa-powder.webp" type="image/webp" fetchpriority="high" crossorigin="anonymous" />
+    <style>
+      html { background: #f6f1e7; }
+      html.is-home { background: #0f0b08; }
+      body { margin: 0; }
+    </style>
+    <script>
+      // The homepage opens on a dark stage — paint it before CSS/JS arrive so it never flashes ivory.
+      if (location.pathname === "/") document.documentElement.classList.add("is-home");
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <noscript>
+      <p style="padding: 2rem; font-family: system-ui">Alba — Ayurvedic, herbal & natural personal care. Please enable JavaScript to shop online, or call +91-9990805005.</p>
+    </noscript>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

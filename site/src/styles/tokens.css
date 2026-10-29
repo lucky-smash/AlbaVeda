@@ -1,0 +1,88 @@
+/*
+ * AlbaVeda design tokens.
+ * Brand red / leaf green are sampled from the original Alba logo
+ * (public/brand/alba-logo.png): dominant red ≈ #D9221B, leaf ≈ #05913D.
+ * Ink variants are darkened only for small-text contrast (WCAG AA on ivory).
+ */
+:root {
+  /* Brand */
+  --alba-red: #d9221b;
+  --alba-red-ink: #b11a13;      /* 6.1:1 on --ivory */
+  --alba-red-deep: #8f150f;
+  --alba-leaf: #05913d;
+  --alba-leaf-ink: #0a6a2e;     /* 6.0:1 on --ivory */
+  --forest: #13301f;
+
+  /* Earth */
+  --soil-950: #0f0b08;
+  --soil-900: #17110d;
+  --soil-800: #221a13;
+  --soil-700: #33271d;
+  --clay: #b98b62;
+  --sand: #e6dbc6;
+  --ivory: #f6f1e7;
+  --paper: #fbf8f2;
+
+  /* Text + lines */
+  --ink: #171411;
+  --ink-2: #4a433b;             /* 8.6:1 on --ivory */
+  --ink-3: #6e665c;             /* 5.1:1 on --ivory, meta text only */
+  --on-dark: #f6f1e7;
+  --on-dark-2: rgba(246, 241, 231, 0.74);
+  --line: rgba(23, 20, 17, 0.14);
+  --line-strong: rgba(23, 20, 17, 0.32);
+  --line-dark: rgba(246, 241, 231, 0.18);
+
+  --focus: #0a6a2e;
+
+  /* Type */
+  --font-display: "Fraunces Variable", "Iowan Old Style", Georgia, serif;
+  --font-sans: "Instrument Sans Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-deva: "Tiro Devanagari Hindi", "Noto Serif Devanagari", serif;
+
+  --fs-display: clamp(3.1rem, 7.4vw, 7.6rem);
+  --fs-h1: clamp(2.6rem, 5.2vw, 5rem);
+  --fs-h2: clamp(2.05rem, 3.7vw, 3.6rem);
+  --fs-h3: clamp(1.4rem, 2vw, 1.8rem);
+  --fs-lead: clamp(1.08rem, 1.25vw, 1.25rem);
+  --fs-body: 1.0625rem;
+  --fs-small: 0.9rem;
+  --fs-micro: 0.75rem;
+
+  /* Space (4pt base) */
+  --s-1: 0.25rem;
+  --s-2: 0.5rem;
+  --s-3: 0.75rem;
+  --s-4: 1rem;
+  --s-5: 1.5rem;
+  --s-6: 2rem;
+  --s-7: 3rem;
+  --s-8: 4rem;
+  --s-9: 6rem;
+  --s-10: 9rem;
+  --section-y: clamp(4.5rem, 10vw, 9rem);
+  --gutter: clamp(1.15rem, 4vw, 3.5rem);
+  --max: 1440px;
+  --measure: 34rem;
+
+  --radius-s: 3px;
+  --radius-m: 6px;
+
+  /* Motion — strong ease-out for entrances, symmetric for state changes */
+  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
+  --ease-drawer: cubic-bezier(0.32, 0.72, 0, 1);
+  --dur-press: 120ms;
+  --dur-ui: 200ms;
+  --dur-reveal: 800ms;
+
+  --header-h: 68px;
+  --safe-b: env(safe-area-inset-bottom, 0px);
+}
+
+@media (max-width: 760px) {
+  :root {
+    --header-h: 60px;
+    --fs-body: 1rem;
+  }
+}
