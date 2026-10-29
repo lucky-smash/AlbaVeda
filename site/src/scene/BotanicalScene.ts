@@ -6,7 +6,6 @@ import {
   damp,
   easeInOutCubic,
   easeOutCubic,
-  easeOutQuint,
   fbm,
   lerp,
   mulberry32,
@@ -20,11 +19,11 @@ import { ClayHeap } from "./ClayHeap";
  * The AlbaVeda botanical stage.
  *
  * Story (time-driven intro, then scroll-driven chapters):
- *   soil → moringa sprouts grow → leaves release powder → powder converges and
- *   the real Moringa pack materialises → (scroll) chapters flip the pack to
- *   other real products while the scene changes around it:
- *     ch.1 Moringa  — leafy sprouts
- *     ch.2 Amla · Reetha · Shikakai — sprouts settle, fruiting amla trees grow
+ *   soil → moringa powder lifts off the earth → powder converges and the real
+ *   Moringa pack materialises → (scroll) chapters flip the pack to other real
+ *   products while the scene changes around it:
+ *     ch.1 Moringa  — hanging vines frame the pack against the treeline
+ *     ch.2 Amla · Reetha · Shikakai — vines lift away, fruiting amla trees grow
  *     ch.3 Multani Mitti — every plant recedes, the ground turns to sun-baked clay, clay dust
  *
  * All state is a pure function of (introT, story) so scrolling backwards,
@@ -59,17 +58,6 @@ const SOIL_FOG = new THREE.Color("#18120d");
 const CLAY_FOG = new THREE.Color("#5a391f");
 const CLAY_SKY_HIGH = new THREE.Color("#6e4a30");
 
-interface Sprout {
-  mesh: THREE.Mesh<THREE.TubeGeometry, THREE.MeshStandardMaterial>;
-  segments: number;
-  radial: number;
-  start: number;
-  /** Leaflets and rachis segments, each revealed once the stem grows past `t`. */
-  leaves: { mesh: THREE.InstancedMesh; index: number; t: number; matrix: THREE.Matrix4 }[];
-}
-
-const ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
-
 export class BotanicalScene {
   private opts: SceneOptions;
   private renderer: THREE.WebGLRenderer;
@@ -92,9 +80,6 @@ export class BotanicalScene {
   private width = 1;
   private height = 1;
 
-  private sprouts: Sprout[] = [];
-  private leafMesh!: THREE.InstancedMesh;
-  private rachisMesh!: THREE.InstancedMesh;
   private clay!: ClayCrush;
   private heap!: ClayHeap;
   private amlaGroup = new THREE.Group();
@@ -150,7 +135,6 @@ export class BotanicalScene {
     this.buildSky();
     this.buildLights();
     this.buildSoil();
-    this.buildSprouts();
     this.buildAmla();
     this.buildTreeline();
     this.buildVines();
@@ -159,7 +143,7 @@ export class BotanicalScene {
     this.buildDust();
     this.clay = new ClayCrush(opts.tier, (x, z) => this.soilHeight(x, z), this.renderer.getPixelRatio());
     this.scene.add(this.clay.group);
-    // Hero: a heap of real Multani Mitti at the pack's front-right foot, clear of the sprouts
+    // Hero: a heap of real Multani Mitti at the pack's front-right foot
     this.heap = new ClayHeap(opts.tier, 0.56, 0.95, this.soilHeight(0.56, 0.95));
     this.scene.add(this.heap.group);
 
@@ -342,126 +326,6 @@ export class BotanicalScene {
     rocks.castShadow = full;
     rocks.receiveShadow = full;
     this.scene.add(rocks);
-  }
-
-  private buildSprouts() {
-    const full = this.opts.tier === "full";
-    const rnd = mulberry32(19);
-    const stemMat = new THREE.MeshStandardMaterial({ color: "#3f6424", roughness: 0.66 });
-
-    // Placement: a crescent behind/around the pack so fronds frame it without hiding the label.
-    const spots: { x: number; z: number; h: number }[] = [];
-    const back = full ? 11 : 7;
-    for (let i = 0; i < back; i++) {
-      const a = lerp(-Math.PI * 0.92, -Math.PI * 0.08, (i + rnd() * 0.6) / back);
-      const r = 0.7 + rnd() * 1.0;
-      spots.push({ x: Math.cos(a) * r * 1.3, z: Math.sin(a) * r * 0.85 - 0.2, h: 0.5 + r * 0.38 + rnd() * 0.22 });
-    }
-    const front = full ? [-1, 1, -1.65, 1.6] : [-1, 1];
-    for (const side of front) {
-      spots.push({ x: side * (0.68 + rnd() * 0.2) + Math.sign(side) * (Math.abs(side) > 1.2 ? 0.25 : 0), z: 0.35 + rnd() * 0.4, h: 0.24 + rnd() * 0.14 });
-    }
-
-    const leafGeo = makeLeafGeometry();
-    const leafMat = new THREE.MeshStandardMaterial({ vertexColors: true, side: THREE.DoubleSide, roughness: 0.55, metalness: 0 });
-    // Rachis (the stalk carrying the leaflets): unit cylinder along +X from the origin
-    const rachisGeo = new THREE.CylinderGeometry(1, 1, 1, 4, 1, true).rotateZ(-Math.PI / 2).translate(0.5, 0, 0);
-    const leafSpecs: { t: number; matrix: THREE.Matrix4; sprout: number }[] = [];
-    const rachisSpecs: { t: number; matrix: THREE.Matrix4; sprout: number }[] = [];
-    const up = new THREE.Vector3(0, 1, 0);
-
-    const basisFor = (dir: THREE.Vector3) => {
-      const width = new THREE.Vector3().crossVectors(up, dir);
-      if (width.lengthSq() < 1e-4) width.set(0, 0, 1);
-      width.normalize();
-      const normal = new THREE.Vector3().crossVectors(dir, width).normalize();
-      return new THREE.Matrix4().makeBasis(dir, width, normal);
-    };
-
-    spots.forEach((s, si) => {
-      const outward = new THREE.Vector3(s.x, 0, s.z).normalize();
-      const lean = outward.clone().multiplyScalar(s.h * (0.22 + rnd() * 0.18));
-      lean.x += (rnd() - 0.5) * 0.1;
-      const base = new THREE.Vector3(s.x, this.soilHeight(s.x, s.z) - 0.02, s.z);
-      // Arching stem: upright low down, bending outward near the top
-      const curve = new THREE.CatmullRomCurve3([
-        base,
-        base.clone().add(new THREE.Vector3(lean.x * 0.08, s.h * 0.36, lean.z * 0.08)),
-        base.clone().add(new THREE.Vector3(lean.x * 0.42, s.h * 0.72, lean.z * 0.42)),
-        base.clone().add(new THREE.Vector3(lean.x, s.h * 0.94, lean.z)),
-      ]);
-      const segments = 48;
-      const radial = 5;
-      const tube = new THREE.TubeGeometry(curve, segments, 0.004 + s.h * 0.005, radial, false);
-      const mesh = new THREE.Mesh(tube, stemMat);
-      mesh.castShadow = full;
-      mesh.geometry.setDrawRange(0, 0);
-      this.scene.add(mesh);
-      this.sprouts.push({ mesh, segments, radial, start: 0.2 + si * 0.085, leaves: [] });
-
-      // Alternate pinnate fronds along the upper stem, plus a terminal frond
-      const nodes = Math.max(3, Math.round(3 + s.h * 4));
-      for (let k = 0; k <= nodes; k++) {
-        const terminal = k === nodes;
-        const t = terminal ? 0.995 : lerp(0.34, 0.9, k / nodes);
-        const p = curve.getPointAt(t);
-        const tan = curve.getTangentAt(t);
-        let dir: THREE.Vector3;
-        if (terminal) {
-          dir = tan.clone().add(new THREE.Vector3(0, 0.3, 0)).normalize();
-        } else {
-          const perp = new THREE.Vector3().crossVectors(tan, up);
-          if (perp.lengthSq() < 1e-4) perp.set(1, 0, 0);
-          perp.normalize().applyAxisAngle(tan, k * 2.4 + rnd() * 0.5); // golden-angle phyllotaxis
-          dir = perp.multiplyScalar(0.85).add(tan.clone().multiplyScalar(0.35)).add(new THREE.Vector3(0, 0.32, 0)).normalize();
-        }
-        const len = (0.14 + s.h * 0.13) * (terminal ? 0.8 : lerp(1, 0.68, k / nodes)) * (0.85 + rnd() * 0.3);
-        const r = basisFor(dir);
-        r.scale(new THREE.Vector3(len, 0.0028, 0.0028));
-        r.setPosition(p);
-        rachisSpecs.push({ t, matrix: r, sprout: si });
-
-        const side = new THREE.Vector3().crossVectors(dir, up);
-        if (side.lengthSq() < 1e-4) side.set(1, 0, 0);
-        side.normalize();
-        const leafSize = (0.058 + s.h * 0.03) * (0.85 + rnd() * 0.3);
-        const pairs = 4;
-        for (let j = 0; j < pairs; j++) {
-          const u = 0.28 + (j / pairs) * 0.68;
-          const pos = p.clone().addScaledVector(dir, len * u);
-          for (const sgn of [-1, 1]) {
-            const ld = side.clone().multiplyScalar(sgn).addScaledVector(dir, 0.45).add(new THREE.Vector3(0, 0.12, 0)).normalize();
-            const m = basisFor(ld);
-            m.scale(new THREE.Vector3().setScalar(leafSize * lerp(0.9, 1.05, j / pairs)));
-            m.setPosition(pos);
-            leafSpecs.push({ t: t + 0.015 * (j + 1), matrix: m, sprout: si });
-          }
-        }
-        const m = basisFor(dir.clone());
-        m.scale(new THREE.Vector3().setScalar(leafSize * 1.1));
-        m.setPosition(p.clone().addScaledVector(dir, len * 0.99));
-        leafSpecs.push({ t: t + 0.08, matrix: m, sprout: si });
-      }
-    });
-
-    const palette = ["#5d9a36", "#4f8a2e", "#6faa3f", "#3f7a28", "#7bb04a", "#87b852"].map((h) => new THREE.Color(h));
-    this.leafMesh = new THREE.InstancedMesh(leafGeo, leafMat, leafSpecs.length);
-    this.leafMesh.castShadow = full;
-    this.leafMesh.frustumCulled = false;
-    leafSpecs.forEach((spec, i) => {
-      this.leafMesh.setMatrixAt(i, ZERO);
-      this.leafMesh.setColorAt(i, palette[Math.floor(rnd() * palette.length)]);
-      this.sprouts[spec.sprout].leaves.push({ mesh: this.leafMesh, index: i, t: spec.t, matrix: spec.matrix });
-    });
-    this.scene.add(this.leafMesh);
-
-    this.rachisMesh = new THREE.InstancedMesh(rachisGeo, stemMat, rachisSpecs.length);
-    this.rachisMesh.frustumCulled = false;
-    rachisSpecs.forEach((spec, i) => {
-      this.rachisMesh.setMatrixAt(i, ZERO);
-      this.sprouts[spec.sprout].leaves.push({ mesh: this.rachisMesh, index: i, t: spec.t, matrix: spec.matrix });
-    });
-    this.scene.add(this.rachisMesh);
   }
 
   /** Fruiting amla saplings either side of the pack — amla grows on trees, not from the soil. */
@@ -795,14 +659,14 @@ export class BotanicalScene {
     const rand = new Float32Array(count * 4);
     const color = new Float32Array(count * 3);
     const rnd = mulberry32(53);
-    const leaves = this.sprouts.flatMap((s) => s.leaves).filter((l) => l.mesh === this.leafMesh);
     const shades = ["#7da94a", "#9dbb5a", "#5f9236", "#b6c873", "#8fb04f"].map((h) => new THREE.Color(h));
-    const v = new THREE.Vector3();
     for (let i = 0; i < count; i++) {
-      // start: random point on a random leaflet blade
-      const leaf = leaves[Math.floor(rnd() * leaves.length)];
-      v.set(rnd() * 0.9 + 0.05, (rnd() - 0.5) * 0.3, 0).applyMatrix4(leaf.matrix);
-      start.set([v.x, v.y, v.z], i * 3);
+      // start: resting on the soil in a wide crescent around the pack, as if drawn up from the earth
+      const a = lerp(-Math.PI * 1.05, Math.PI * 0.05, rnd());
+      const r = 0.55 + Math.pow(rnd(), 0.8) * 1.5;
+      const x = Math.cos(a) * r * 1.25;
+      const z = Math.sin(a) * r * 0.8 + 0.1;
+      start.set([x, this.soilHeight(x, z) + 0.01 + rnd() * 0.04, z], i * 3);
       // target: on the pack surface (mostly the front), in pack-local space
       const onFront = rnd() < 0.82;
       if (onFront) {
@@ -1052,29 +916,6 @@ export class BotanicalScene {
     this.camera.position.set(camX, camY, camZ);
     this.camera.lookAt(0, lerp(0.3, 0.64, introE), 0);
 
-    /* sprouts ---------------------------------------------------------- */
-    // ch.1 full herbs → ch.2 low herbs → ch.3 bare earth
-    const storyGrowth = 1 - range(k, 0.45, 1.15) * 0.62 - range(k, 1.45, 1.9) * 0.38;
-    const breath = 1 - 0.1 * Math.sin(Math.PI * range(it, 2.2, 4.2));
-    for (const s of this.sprouts) {
-      const g = easeOutCubic(range(it, s.start, s.start + 1.55)) * storyGrowth;
-      const segs = Math.floor(g * s.segments);
-      s.mesh.geometry.setDrawRange(0, segs * s.radial * 6);
-      s.mesh.visible = segs > 0;
-      for (const leaf of s.leaves) {
-        const lg = easeOutQuint(clamp01((g - leaf.t + 0.06) / 0.2)) * breath;
-        this.tmpM.copy(leaf.matrix);
-        if (lg < 1) {
-          this.tmpM.decompose(this.tmpV, this.tmpQ, this.tmpS);
-          this.tmpS.multiplyScalar(Math.max(lg, 0.0001));
-          this.tmpM.compose(this.tmpV, this.tmpQ, this.tmpS);
-        }
-        leaf.mesh.setMatrixAt(leaf.index, this.tmpM);
-      }
-    }
-    this.leafMesh.instanceMatrix.needsUpdate = true;
-    this.rachisMesh.instanceMatrix.needsUpdate = true;
-
     /* amla trees grow in chapter 2, then recede as Multani Mitti arrives -- */
     this.amlaGrowth = Math.max(this.amlaGrowth, range(k, 0.4, 1.0));
     const amlaUp = this.amlaGrowth * (1 - easeInOutCubic(range(k, 1.3, 1.75)));
@@ -1186,32 +1027,6 @@ export class BotanicalScene {
 }
 
 /* -------------------------------------------------------------- textures */
-
-function makeLeafGeometry() {
-  const shape = new THREE.Shape();
-  shape.moveTo(0, 0);
-  shape.bezierCurveTo(0.08, 0.34, 0.72, 0.4, 1, 0);
-  shape.bezierCurveTo(0.72, -0.4, 0.08, -0.34, 0, 0);
-  const geo = new THREE.ShapeGeometry(shape, 12);
-  const pos = geo.attributes.position as THREE.BufferAttribute;
-  const colors = new Float32Array(pos.count * 3);
-  const base = new THREE.Color("#c9d9a8");
-  const tip = new THREE.Color("#ffffff");
-  const rib = new THREE.Color("#f2f7dd");
-  const c = new THREE.Color();
-  for (let i = 0; i < pos.count; i++) {
-    const x = pos.getX(i);
-    const y = pos.getY(i);
-    // V-fold along the midrib plus a gentle downward curl toward the tip
-    pos.setZ(i, Math.abs(y) * 0.22 - x * x * 0.12);
-    c.copy(base).lerp(tip, Math.min(1, x * 1.4));
-    if (Math.abs(y) < 0.02) c.lerp(rib, 0.6);
-    colors.set([c.r, c.g, c.b], i * 3);
-  }
-  geo.setAttribute("color", new THREE.BufferAttribute(colors, 3));
-  geo.computeVertexNormals();
-  return geo;
-}
 
 function makeGrainTexture(size: number) {
   const canvas = document.createElement("canvas");
