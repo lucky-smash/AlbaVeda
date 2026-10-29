@@ -23,8 +23,8 @@ import { ClayHeap } from "./ClayHeap";
  *   Moringa pack materialises → (scroll) chapters flip the pack to other real
  *   products while the scene changes around it:
  *     ch.1 Moringa  — hanging vines frame the pack against the treeline
- *     ch.2 Amla · Reetha · Shikakai — vines lift away, fruiting amla trees grow
- *     ch.3 Multani Mitti — every plant recedes, the ground turns to sun-baked clay, clay dust
+ *     ch.2 Amla · Reetha · Shikakai — fruiting amla trees stand beside the pack
+ *     ch.3 Multani Mitti — vines draw up out of frame, trees recede, the ground turns to sun-baked clay
  *
  * All state is a pure function of (introT, story) so scrolling backwards,
  * skipping, or scrolling during the intro always resolves to a coherent frame.
@@ -98,6 +98,8 @@ export class BotanicalScene {
   /** Right edge (px) of the hero copy and of the chapter copy, reported by the page; 0 = unknown. */
   private copyEdges = { hero: 0, chapter: 0 };
   private bounds = { left: 0, right: 0, top: 0 };
+  /** Per-object screen spans (px), so each vine only has to clear what is actually beneath it. */
+  private spans: { l: number; r: number; top: number }[] = [];
   private foliageTime = { value: 0 };
   private earthMix = { value: 0 }; // 0 dark loam → 1 Multani clay ground
   private pack = new THREE.Group();
@@ -510,13 +512,19 @@ export class BotanicalScene {
     let left = Infinity;
     let right = -Infinity;
     let top = Infinity;
+    this.spans.length = 0;
     const take = (x: number, y: number, z: number, hw: number) => {
+      const span = { l: Infinity, r: -Infinity, top: Infinity };
       for (const dx of [-hw, hw]) {
         const p = this.toScreen(x + dx, y, z);
-        left = Math.min(left, p.x);
-        right = Math.max(right, p.x);
-        top = Math.min(top, p.y);
+        span.l = Math.min(span.l, p.x);
+        span.r = Math.max(span.r, p.x);
+        span.top = Math.min(span.top, p.y);
       }
+      left = Math.min(left, span.l);
+      right = Math.max(right, span.r);
+      top = Math.min(top, span.top);
+      this.spans.push(span);
     };
     take(0, this.pack.position.y + PACK_H / 2, 0, PACK_W / 2);
     for (const f of this.flanks) if (f.group.visible) take(f.x, f.group.position.y + PACK_H / 2, f.z, PACK_W / 2);
@@ -564,32 +572,51 @@ export class BotanicalScene {
 
   /**
    * Hang each vine from just under the header, outside the composition's left/right edge, ending
-   * above the tallest product, canopy or clay lump — and on landscape screens never over the copy.
+   * above whatever product, canopy or clay lump sits in its own column (free-hanging and long
+   * when nothing does) — and on landscape screens never over the copy. Multani Mitti draws them
+   * up out of frame: that chapter is bare clay.
    */
-  private placeVines(time: number, inStory: number) {
+  private placeVines(time: number, inStory: number, k: number) {
     if (!this.vines.length) return;
     const W = this.width;
     const H = this.height;
-    const { left, right, top } = this.bounds;
+    const { left, right } = this.bounds;
     const phone = this.portrait && W < 760;
     const headerPx = phone ? 60 : 68;
     const vineTop = headerPx + 2; // hangs from just under the header bar
-    const vineBottom = Math.max(vineTop + H * 0.07, top - H * 0.03);
-    const lenPx = vineBottom - vineTop;
+    const reach = H * (phone ? 0.3 : 0.42); // free-hanging length
+    const minLen = H * (phone ? 0.11 : 0.2); // may just brush a carton's top corner, never its label
     const minX = this.portrait ? W * 0.02 : this.freeZone(inStory).left;
     const maxX = W * 0.985;
     const margin = W * 0.012;
+    const gone = easeInOutCubic(range(k, 1.2, 1.6));
 
     this.camera.getWorldDirection(this.vineQ);
     const forward = this.vineQ.clone();
     for (const v of this.vines) {
+      v.pivot.visible = gone < 0.999;
+      if (!v.pivot.visible) continue;
       // projected width runs a little over the model's aspect once yawed and swaying
-      const hw = (lenPx * v.aspect * 1.3) / 2;
-      let sx = v.side < 0 ? left - margin - hw : right + margin + hw;
-      sx = Math.min(Math.max(sx, minX + hw), maxX - hw);
+      const column = (len: number) => {
+        const hw = (len * v.aspect * 1.3) / 2;
+        let sx = v.side < 0 ? left - margin - hw : right + margin + hw;
+        sx = Math.min(Math.max(sx, minX + hw), maxX - hw);
+        return { hw, sx };
+      };
+      // size against the column the vine would occupy at full reach, then settle into the shorter one
+      let lenPx = reach;
+      for (let pass = 0; pass < 2; pass++) {
+        const { hw, sx } = column(lenPx);
+        let floor = Infinity;
+        for (const s of this.spans) if (s.r > sx - hw && s.l < sx + hw) floor = Math.min(floor, s.top);
+        lenPx = Math.max(minLen, Math.min(reach, floor - H * 0.02 - vineTop));
+      }
+      const { sx } = column(lenPx);
+      // Multani Mitti: drawn straight up past the header
+      const anchorY = vineTop - gone * (lenPx + vineTop + H * 0.05);
       // unproject the top anchor onto a plane just in front of the products
       const nx = (sx / W) * 2 - 1;
-      const ny = 1 - (vineTop / H) * 2;
+      const ny = 1 - (anchorY / H) * 2;
       const dir = this.vineP.set(nx, ny, 0.5).unproject(this.camera).sub(this.camera.position).normalize();
       const VINE_Z = 0.45;
       const t = (VINE_Z - this.camera.position.z) / dir.z;
@@ -1209,7 +1236,7 @@ export class BotanicalScene {
     this.camera.updateMatrixWorld();
     this.measureComposition(range(k, 1.62, 2.0) * (1 - range(hold, 0.3, 0.6)));
     this.updateFit(inStory);
-    this.placeVines(time, inStory);
+    this.placeVines(time, inStory, k);
   }
 
   private lerpPalette(colors: THREE.Color[], k: number) {
